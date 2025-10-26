@@ -1,0 +1,7 @@
+{
+  "name": "FocusFlow AI",
+  "description": "An intelligent assistant designed for individuals with ADHD. Speak your thoughts, and FocusFlow AI will transcribe, organize, and prioritize them into a clear, actionable to-do list, helping you conquer your day with focus and clarity.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
