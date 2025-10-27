@@ -79,10 +79,13 @@ export async function organizeTextIntoTasks(transcription: string): Promise<Task
         const jsonResponse = response.text;
         const parsedTasks = JSON.parse(jsonResponse) as any[];
 
-        // Add completed status to tasks and subtasks
+        // Add completed status and timestamps to tasks and subtasks
+        const now = new Date().toISOString();
         return parsedTasks.map(task => ({
             ...task,
             completed: false,
+            createdAt: now,
+            targetDate: undefined,
             subtasks: task.subtasks.map((sub: any) => ({ ...sub, completed: false }))
         }));
 

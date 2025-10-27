@@ -1,11 +1,16 @@
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { GoogleGenAI, LiveSession, Modality, Blob, LiveServerMessage } from '@google/genai';
+import { GoogleGenAI, Session, Modality, Blob, LiveServerMessage } from '@google/genai';
 import { Task } from './types';
 import TaskItem from './components/TaskItem';
 import { MicrophoneIcon, StopIcon } from './components/icons';
 import { organizeTextIntoTasks } from './services/geminiService';
 import LoadingSpinner from './components/LoadingSpinner';
+import { storageService } from './services/storageService';
+import StorageError from './components/StorageError';
+import Calendar from './components/Calendar';
+import TaskForm from './components/TaskForm';
+import StorageIndicator from './components/StorageIndicator';
 
 if (!process.env.API_KEY) {
   throw new Error("API_KEY environment variable is not set");
@@ -34,6 +39,22 @@ function createBlob(data: Float32Array): Blob {
     };
 }
 
+// Spanish Date Formatter
+function formatDateSpanish(dateString: string): string {
+    try {
+        const date = new Date(dateString + 'T00:00:00Z'); // Treat as UTC to avoid timezone issues
+        return new Intl.DateTimeFormat('es-ES', {
+            weekday: 'long',
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric'
+        }).format(date);
+    } catch (e) {
+        return dateString; // Fallback to original if parsing fails
+    }
+}
+
+type TabType = 'grabar' | 'tareas' | 'calendario';
 
 const App: React.FC = () => {
     const [isRecording, setIsRecording] = useState(false);
@@ -41,11 +62,51 @@ const App: React.FC = () => {
     const [tasks, setTasks] = useState<Task[]>([]);
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [storageError, setStorageError] = useState<string | null>(null);
+    const [isInitialized, setIsInitialized] = useState(false);
+    const [activeTab, setActiveTab] = useState<TabType>('grabar');
+    const [selectedDate, setSelectedDate] = useState<string | null>(null);
+    const [calendarGroupBy, setCalendarGroupBy] = useState<'createdAt' | 'targetDate'>('createdAt');
+    const [showCreateForm, setShowCreateForm] = useState(false);
+    const [editingTask, setEditingTask] = useState<Task | null>(null);
 
-    const sessionPromiseRef = useRef<Promise<LiveSession> | null>(null);
+    const sessionPromiseRef = useRef<Promise<Session> | null>(null);
     const audioContextRef = useRef<AudioContext | null>(null);
     const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
     const mediaStreamSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+
+    // Hydrate tasks from localStorage on mount
+    useEffect(() => {
+        try {
+            const storedTasks = storageService.getTasks();
+            if (storedTasks.length > 0) {
+                setTasks(storedTasks);
+            }
+            setIsInitialized(true);
+        } catch (error) {
+            console.error('Error loading tasks from storage:', error);
+            setStorageError('No se pudieron cargar las tareas guardadas. Comenzando de nuevo.');
+            setIsInitialized(true);
+        }
+    }, []);
+
+    // Auto-save tasks to localStorage whenever they change
+    useEffect(() => {
+        // Don't save until we've loaded initial data
+        if (!isInitialized) return;
+
+        try {
+            storageService.saveTasks(tasks);
+            setStorageError(null);
+        } catch (error: any) {
+            console.error('Error saving tasks to storage:', error);
+            if (error.message && error.message.includes('QUOTA_EXCEEDED')) {
+                setStorageError(error.message);
+            } else {
+                setStorageError('Error al guardar las tareas.');
+            }
+        }
+    }, [tasks, isInitialized]);
 
     const stopRecording = useCallback(async () => {
         if (!isRecording) return;
@@ -75,7 +136,8 @@ const App: React.FC = () => {
             setError(null);
             try {
                 const organizedTasks = await organizeTextIntoTasks(transcription);
-                setTasks(organizedTasks);
+                // Append new tasks to existing ones instead of replacing
+                setTasks(prevTasks => [...prevTasks, ...organizedTasks]);
             } catch (e: any) {
                 setError(e.message || "An unknown error occurred.");
             } finally {
@@ -92,7 +154,6 @@ const App: React.FC = () => {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             setIsRecording(true);
             setError(null);
-            setTasks([]);
 
             audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
             
@@ -170,6 +231,39 @@ const App: React.FC = () => {
             )
         );
     };
+
+    const handleCreateTask = (taskData: Omit<Task, 'id' | 'createdAt'>) => {
+        // Generate unique ID
+        const newTask: Task = {
+            ...taskData,
+            id: `task-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+            createdAt: new Date().toISOString()
+        };
+
+        setTasks(prevTasks => [...prevTasks, newTask]);
+        setShowCreateForm(false);
+    };
+
+    const handleEditTask = (task: Task) => {
+        setEditingTask(task);
+    };
+
+    const handleSaveEditTask = (taskData: Omit<Task, 'id' | 'createdAt'>) => {
+        if (!editingTask) return;
+
+        setTasks(prevTasks =>
+            prevTasks.map(task =>
+                task.id === editingTask.id
+                    ? { ...task, ...taskData }
+                    : task
+            )
+        );
+        setEditingTask(null);
+    };
+
+    const handleDeleteTask = (taskId: string) => {
+        setTasks(prevTasks => prevTasks.filter(task => task.id !== taskId));
+    };
     
     useEffect(() => {
         // Auto-complete main task if all its subtasks are completed
@@ -199,51 +293,240 @@ const App: React.FC = () => {
             </header>
 
             <main className="max-w-4xl mx-auto py-8 px-4 sm:px-6 lg:px-8">
-                <div className="bg-white p-6 rounded-xl shadow-md border border-gray-200">
-                    <h2 className="text-xl font-semibold text-gray-800">¿Qué tienes en mente?</h2>
-                    <p className="text-gray-600 mt-1">Presiona el micrófono y habla libremente. Yo me encargo de organizar tus ideas.</p>
-                    
-                    <div className="mt-6 flex flex-col items-center">
-                        <button
-                            onClick={isRecording ? stopRecording : startRecording}
-                            className={`w-20 h-20 rounded-full flex items-center justify-center transition-all duration-300 text-white ${isRecording ? 'bg-red-500 hover:bg-red-600 shadow-lg scale-105' : 'bg-blue-600 hover:bg-blue-700'}`}
-                            aria-label={isRecording ? 'Stop recording' : 'Start recording'}
-                        >
-                            {isRecording ? <StopIcon className="w-8 h-8"/> : <MicrophoneIcon className="w-10 h-10"/>}
-                        </button>
-                         {isRecording && <p className="mt-4 text-blue-600 font-medium animate-pulse">Escuchando...</p>}
+                {/* Tab Navigation */}
+                <div className="flex gap-2 mb-6 border-b border-gray-200">
+                    <button
+                        onClick={() => setActiveTab('grabar')}
+                        className={`px-4 py-2 font-medium border-b-2 transition-colors ${
+                            activeTab === 'grabar'
+                                ? 'text-blue-600 border-blue-600'
+                                : 'text-gray-600 border-transparent hover:text-gray-900'
+                        }`}
+                    >
+                        Grabar
+                    </button>
+                    <button
+                        onClick={() => setActiveTab('tareas')}
+                        className={`px-4 py-2 font-medium border-b-2 transition-colors ${
+                            activeTab === 'tareas'
+                                ? 'text-blue-600 border-blue-600'
+                                : 'text-gray-600 border-transparent hover:text-gray-900'
+                        }`}
+                    >
+                        Tareas
+                    </button>
+                    <button
+                        onClick={() => setActiveTab('calendario')}
+                        className={`px-4 py-2 font-medium border-b-2 transition-colors ${
+                            activeTab === 'calendario'
+                                ? 'text-blue-600 border-blue-600'
+                                : 'text-gray-600 border-transparent hover:text-gray-900'
+                        }`}
+                    >
+                        Calendario
+                    </button>
+                </div>
+
+                {/* Grabar Tab */}
+                {activeTab === 'grabar' && (
+                    <div className="bg-white p-6 rounded-xl shadow-md border border-gray-200">
+                        <h2 className="text-xl font-semibold text-gray-800">¿Qué tienes en mente?</h2>
+                        <p className="text-gray-600 mt-1">Presiona el micrófono y habla libremente. Yo me encargo de organizar tus ideas.</p>
+
+                        <div className="mt-6 flex flex-col items-center">
+                            <button
+                                onClick={isRecording ? stopRecording : startRecording}
+                                className={`w-20 h-20 rounded-full flex items-center justify-center transition-all duration-300 text-white ${isRecording ? 'bg-red-500 hover:bg-red-600 shadow-lg scale-105' : 'bg-blue-600 hover:bg-blue-700'}`}
+                                aria-label={isRecording ? 'Stop recording' : 'Start recording'}
+                            >
+                                {isRecording ? <StopIcon className="w-8 h-8"/> : <MicrophoneIcon className="w-10 h-10"/>}
+                            </button>
+                             {isRecording && <p className="mt-4 text-blue-600 font-medium animate-pulse">Escuchando...</p>}
+                        </div>
+
+                        {transcription && isRecording && (
+                            <div className="mt-6 p-4 bg-gray-100 rounded-lg">
+                                <p className="text-gray-700 italic">{transcription}</p>
+                            </div>
+                        )}
                     </div>
+                )}
 
-                    {transcription && isRecording && (
-                        <div className="mt-6 p-4 bg-gray-100 rounded-lg">
-                            <p className="text-gray-700 italic">{transcription}</p>
-                        </div>
-                    )}
-                </div>
+                {/* Tareas Tab */}
+                {activeTab === 'tareas' && (
+                    <div>
+                        {showCreateForm && (
+                            <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+                                <div className="bg-white rounded-xl shadow-lg max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+                                    <div className="p-6">
+                                        <TaskForm
+                                            mode="create"
+                                            onSubmit={handleCreateTask}
+                                            onCancel={() => setShowCreateForm(false)}
+                                        />
+                                    </div>
+                                </div>
+                            </div>
+                        )}
 
-                <div className="mt-8">
-                    {isLoading && <LoadingSpinner message="Organizando tus pensamientos..." />}
-                    {error && <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded-md" role="alert"><p className="font-bold">Error</p><p>{error}</p></div>}
-                    
-                    {!isLoading && tasks.length > 0 && (
-                        <div>
-                           <h2 className="text-2xl font-bold text-gray-800 mb-4">Tu Plan de Acción</h2>
-                           {tasks.map(task => (
-                               <TaskItem key={task.id} task={task} onToggleTask={handleToggleTask} onToggleSubtask={handleToggleSubtask} />
-                           ))}
-                        </div>
-                    )}
+                        {editingTask && (
+                            <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+                                <div className="bg-white rounded-xl shadow-lg max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+                                    <div className="p-6">
+                                        <TaskForm
+                                            mode="edit"
+                                            initialTask={editingTask}
+                                            onSubmit={handleSaveEditTask}
+                                            onCancel={() => setEditingTask(null)}
+                                        />
+                                    </div>
+                                </div>
+                            </div>
+                        )}
 
-                    {!isLoading && tasks.length === 0 && !error && (
-                        <div className="text-center py-12 px-6 bg-white rounded-xl shadow-md border border-gray-200">
-                            <svg className="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
-                                <path vectorEffect="non-scaling-stroke" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                            </svg>
-                            <h3 className="mt-2 text-lg font-medium text-gray-900">Aquí aparecerán tus tareas</h3>
-                            <p className="mt-1 text-sm text-gray-500">Usa el micrófono para empezar a organizar tu día.</p>
+                        <div className="mb-6 flex justify-between items-center">
+                            <h2 className="text-2xl font-bold text-gray-800">Tu Plan de Acción</h2>
+                            <button
+                                onClick={() => setShowCreateForm(true)}
+                                className="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg transition-colors"
+                            >
+                                + Nueva Tarea
+                            </button>
                         </div>
-                    )}
-                </div>
+
+                        {/* Storage Indicator */}
+                        <div className="mb-6">
+                            <StorageIndicator showDetails={true} />
+                        </div>
+
+                        {storageError && <StorageError message={storageError} onClear={() => setTasks([])} />}
+                        {isLoading && <LoadingSpinner message="Organizando tus pensamientos..." />}
+                        {error && <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded-md" role="alert"><p className="font-bold">Error</p><p>{error}</p></div>}
+
+                        {!isLoading && tasks.length > 0 && (
+                            <div>
+                               {tasks.map(task => (
+                                   <TaskItem
+                                       key={task.id}
+                                       task={task}
+                                       onToggleTask={handleToggleTask}
+                                       onToggleSubtask={handleToggleSubtask}
+                                       onEdit={handleEditTask}
+                                       onDelete={handleDeleteTask}
+                                   />
+                               ))}
+                            </div>
+                        )}
+
+                        {!isLoading && tasks.length === 0 && !error && (
+                            <div className="text-center py-12 px-6 bg-white rounded-xl shadow-md border border-gray-200">
+                                <svg className="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                                    <path vectorEffect="non-scaling-stroke" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                </svg>
+                                <h3 className="mt-2 text-lg font-medium text-gray-900">Aquí aparecerán tus tareas</h3>
+                                <p className="mt-1 text-sm text-gray-500">Usa el micrófono o crea una nueva tarea para empezar a organizar tu día.</p>
+                            </div>
+                        )}
+                    </div>
+                )}
+
+                {/* Calendario Tab */}
+                {activeTab === 'calendario' && (
+                    <div>
+                        <div className="mb-6">
+                            <label className="text-sm font-medium text-gray-700 block mb-2">Agrupar por:</label>
+                            <div className="flex gap-4">
+                                <label className="flex items-center gap-2 cursor-pointer">
+                                    <input
+                                        type="radio"
+                                        checked={calendarGroupBy === 'createdAt'}
+                                        onChange={() => setCalendarGroupBy('createdAt')}
+                                        className="w-4 h-4"
+                                    />
+                                    <span className="text-sm text-gray-700">Fecha de Creación</span>
+                                </label>
+                                <label className="flex items-center gap-2 cursor-pointer">
+                                    <input
+                                        type="radio"
+                                        checked={calendarGroupBy === 'targetDate'}
+                                        onChange={() => setCalendarGroupBy('targetDate')}
+                                        className="w-4 h-4"
+                                    />
+                                    <span className="text-sm text-gray-700">Fecha Objetivo</span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <Calendar
+                            tasks={tasks}
+                            selectedDate={selectedDate}
+                            onDateSelect={setSelectedDate}
+                            groupBy={calendarGroupBy}
+                        />
+
+                        {/* Unscheduled Tasks Section (when grouping by targetDate) */}
+                        {calendarGroupBy === 'targetDate' && (
+                            <div className="mt-8 mb-8">
+                                <h2 className="text-xl font-bold text-gray-800 mb-4">📋 Tareas Sin Fecha Asignada</h2>
+                                {tasks.filter(task => !task.targetDate).length > 0 ? (
+                                    <div>
+                                        <p className="text-sm text-gray-600 mb-4">
+                                            {tasks.filter(task => !task.targetDate).length} tarea{tasks.filter(task => !task.targetDate).length !== 1 ? 's' : ''} sin fecha planificada
+                                        </p>
+                                        {tasks.filter(task => !task.targetDate).map(task => (
+                                            <TaskItem
+                                                key={task.id}
+                                                task={task}
+                                                onToggleTask={handleToggleTask}
+                                                onToggleSubtask={handleToggleSubtask}
+                                                onEdit={handleEditTask}
+                                                onDelete={handleDeleteTask}
+                                            />
+                                        ))}
+                                    </div>
+                                ) : (
+                                    <div className="text-center py-8 px-6 bg-green-50 rounded-lg border border-green-200">
+                                        <p className="text-green-700 font-medium">✨ ¡Todas las tareas tienen fecha asignada!</p>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        {selectedDate && (
+                            <div className="mt-8">
+                                <h2 className="text-2xl font-bold text-gray-800 mb-4">Tareas de {formatDateSpanish(selectedDate)}</h2>
+                                {tasks.filter(task => {
+                                    const dateField = calendarGroupBy === 'createdAt' ? task.createdAt : task.targetDate;
+                                    if (!dateField) return false;
+                                    const taskDate = dateField.split('T')[0];
+                                    return taskDate === selectedDate;
+                                }).length > 0 ? (
+                                    <div>
+                                        {tasks.filter(task => {
+                                            const dateField = calendarGroupBy === 'createdAt' ? task.createdAt : task.targetDate;
+                                            if (!dateField) return false;
+                                            const taskDate = dateField.split('T')[0];
+                                            return taskDate === selectedDate;
+                                        }).map(task => (
+                                            <TaskItem
+                                                key={task.id}
+                                                task={task}
+                                                onToggleTask={handleToggleTask}
+                                                onToggleSubtask={handleToggleSubtask}
+                                                onEdit={handleEditTask}
+                                                onDelete={handleDeleteTask}
+                                            />
+                                        ))}
+                                    </div>
+                                ) : (
+                                    <div className="text-center py-12 px-6 bg-white rounded-xl shadow-md border border-gray-200">
+                                        <p className="text-gray-500">No hay tareas para esta fecha.</p>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                )}
             </main>
         </div>
     );

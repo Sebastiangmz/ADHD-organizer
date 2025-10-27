@@ -7,6 +7,8 @@ interface TaskItemProps {
   task: Task;
   onToggleTask: (taskId: string) => void;
   onToggleSubtask: (taskId: string, subtaskId: string) => void;
+  onEdit?: (task: Task) => void;
+  onDelete?: (taskId: string) => void;
 }
 
 const priorityStyles: { [key in Priority]: { bg: string; text: string; border: string } } = {
@@ -15,11 +17,17 @@ const priorityStyles: { [key in Priority]: { bg: string; text: string; border: s
   [Priority.BAJA]: { bg: 'bg-green-100', text: 'text-green-800', border: 'border-green-500' },
 };
 
-const TaskItem: React.FC<TaskItemProps> = ({ task, onToggleTask, onToggleSubtask }) => {
+const TaskItem: React.FC<TaskItemProps> = ({ task, onToggleTask, onToggleSubtask, onEdit, onDelete }) => {
   const [isExpanded, setIsExpanded] = useState(true);
   const styles = priorityStyles[task.priority];
 
   const allSubtasksCompleted = task.subtasks.length > 0 && task.subtasks.every(s => s.completed);
+
+  const handleDelete = () => {
+    if (window.confirm(`¿Estás seguro de que quieres eliminar la tarea "${task.title}"? Esta acción no se puede deshacer.`)) {
+      onDelete?.(task.id);
+    }
+  };
 
   return (
     <div className={`transition-all duration-300 rounded-lg shadow-sm mb-4 border-l-4 ${task.completed ? 'bg-gray-100 border-gray-300' : `${styles.bg} ${styles.border}`}`}>
@@ -37,8 +45,26 @@ const TaskItem: React.FC<TaskItemProps> = ({ task, onToggleTask, onToggleSubtask
               {task.details && <p className={`text-sm mt-1 ${task.completed ? 'text-gray-400' : 'text-gray-600'}`}>{task.details}</p>}
             </div>
           </div>
-          <div className="flex items-center space-x-3">
+          <div className="flex items-center space-x-2">
               <span className={`px-3 py-1 text-xs font-medium rounded-full ${styles.bg} ${styles.text} border ${styles.border}`}>{task.priority}</span>
+              {onEdit && (
+                <button
+                  onClick={() => onEdit(task)}
+                  className="px-3 py-1 text-xs text-blue-600 hover:bg-blue-100 rounded transition-colors"
+                  aria-label="Editar tarea"
+                >
+                  Editar
+                </button>
+              )}
+              {onDelete && (
+                <button
+                  onClick={handleDelete}
+                  className="px-3 py-1 text-xs text-red-600 hover:bg-red-100 rounded transition-colors"
+                  aria-label="Eliminar tarea"
+                >
+                  Eliminar
+                </button>
+              )}
               {task.subtasks.length > 0 && (
                 <button onClick={() => setIsExpanded(!isExpanded)} className="p-1 rounded-full hover:bg-black/10 transition-colors">
                     <ChevronDownIcon className={`w-5 h-5 text-gray-500 transition-transform duration-300 ${isExpanded ? '' : '-rotate-90'}`} />
