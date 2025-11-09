@@ -404,3 +404,49 @@ MIT License - You're free to use, modify, and distribute this project.
 - 📖 [Full Documentation](./IMPLEMENTATION_STATUS.md)
 - 🐛 [Report Issues](https://github.com/yourusername/focusflow-ai/issues)
 - 💬 [Discussions](https://github.com/yourusername/focusflow-ai/discussions)
+
+---
+
+## 🗄️ Base de Datos SQLite (NUEVO)
+
+La aplicación ahora usa **SQLite** para persistencia permanente de datos.
+
+### Características:
+- ✅ Tus tareas nunca se pierden
+- ✅ Sin límites de almacenamiento como localStorage
+- ✅ Backups fáciles (solo copia el archivo .db)
+- ✅ Migración automática desde localStorage
+
+### Comandos útiles:
+```bash
+npm run db:stats     # Ver estadísticas de la BD
+npm run db:backup    # Crear backup
+npm run db:export    # Exportar a JSON
+```
+
+### Ubicación de la base de datos:
+```
+server/focusflow.db
+```
+
+📖 **Lee [DATABASE_SETUP.md](./DATABASE_SETUP.md) para instrucciones completas**
+
+---
+
+## 🚀 Cómo iniciar el proyecto
+
+### Opción 1: Todo junto (Recomendado)
+```bash
+npm start
+```
+Inicia backend (puerto 3001) + frontend (puerto 3000) automáticamente.
+
+### Opción 2: Por separado
+```bash
+# Terminal 1 - Backend
+npm run server
+
+# Terminal 2 - Frontend  
+npm run dev
+```
+

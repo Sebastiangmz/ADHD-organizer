@@ -5,24 +5,36 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "server": "node server/index.cjs",
+    "server:dev": "nodemon server/index.cjs",
+    "start": "npm run server & npm run dev",
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest",
-    "test:ui": "vitest --ui"
+    "test:ui": "vitest --ui",
+    "db:stats": "node server/db-tools.cjs stats",
+    "db:backup": "node server/db-tools.cjs backup",
+    "db:export": "node server/db-tools.cjs export"
   },
   "dependencies": {
     "@google/genai": "^1.27.0",
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "react-dom": "^19.2.0",
+    "sqlite3": "^5.1.7"
   },
   "devDependencies": {
     "@testing-library/dom": "^10.4.1",
     "@testing-library/react": "^16.3.0",
     "@testing-library/user-event": "^14.6.1",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.5",
     "@types/node": "^22.14.0",
     "@vitejs/plugin-react": "^5.0.0",
     "@vitest/ui": "^4.0.3",
     "happy-dom": "^20.0.8",
+    "nodemon": "^3.1.10",
     "typescript": "~5.8.2",
     "vite": "^6.2.0",
     "vitest": "^4.0.3"

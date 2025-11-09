@@ -7,6 +7,7 @@ import { MicrophoneIcon, StopIcon } from './components/icons';
 import { organizeTextIntoTasks } from './services/geminiService';
 import LoadingSpinner from './components/LoadingSpinner';
 import { storageService } from './services/storageService';
+import { apiService } from './services/apiService';
 import StorageError from './components/StorageError';
 import Calendar from './components/Calendar';
 import TaskForm from './components/TaskForm';
@@ -65,6 +66,8 @@ const App: React.FC = () => {
     const [storageError, setStorageError] = useState<string | null>(null);
     const [isInitialized, setIsInitialized] = useState(false);
     const [activeTab, setActiveTab] = useState<TabType>('grabar');
+    const [serverError, setServerError] = useState<string | null>(null);
+    const [isMigrating, setIsMigrating] = useState(false);
     const [selectedDate, setSelectedDate] = useState<string | null>(null);
     const [calendarGroupBy, setCalendarGroupBy] = useState<'createdAt' | 'targetDate'>('createdAt');
     const [showCreateForm, setShowCreateForm] = useState(false);
@@ -75,38 +78,93 @@ const App: React.FC = () => {
     const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
     const mediaStreamSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
 
-    // Hydrate tasks from localStorage on mount
+    // Load tasks from database on mount, with migration from localStorage if needed
     useEffect(() => {
-        try {
-            const storedTasks = storageService.getTasks();
-            if (storedTasks.length > 0) {
-                setTasks(storedTasks);
+        async function initializeTasks() {
+            try {
+                // Check if server is available
+                const serverAvailable = await apiService.healthCheck();
+
+                if (!serverAvailable) {
+                    setServerError('No se puede conectar al servidor. Asegúrate de que esté ejecutándose.');
+                    // Fallback to localStorage
+                    const storedTasks = storageService.getTasks();
+                    if (storedTasks.length > 0) {
+                        setTasks(storedTasks);
+                    }
+                    setIsInitialized(true);
+                    return;
+                }
+
+                // Try to load from database
+                const dbTasks = await apiService.getTasks();
+
+                // If database is empty but localStorage has data, migrate
+                if (dbTasks.length === 0) {
+                    const localTasks = storageService.getTasks();
+                    if (localTasks.length > 0) {
+                        setIsMigrating(true);
+                        console.log('Migrating tasks from localStorage to database...');
+                        try {
+                            const result = await apiService.bulkCreateTasks(localTasks);
+                            console.log(`Migration complete: ${result.success} tasks migrated, ${result.errors} errors`);
+                            // Reload tasks from database
+                            const migratedTasks = await apiService.getTasks();
+                            setTasks(migratedTasks);
+                            // Clear localStorage after successful migration
+                            storageService.clearAll();
+                        } catch (migrationError) {
+                            console.error('Migration failed:', migrationError);
+                            setStorageError('Error al migrar las tareas. Usando datos locales.');
+                            setTasks(localTasks);
+                        } finally {
+                            setIsMigrating(false);
+                        }
+                    } else {
+                        setTasks([]);
+                    }
+                } else {
+                    setTasks(dbTasks);
+                }
+
+                setIsInitialized(true);
+            } catch (error) {
+                console.error('Error initializing tasks:', error);
+                setServerError('Error al cargar las tareas del servidor.');
+                // Fallback to localStorage
+                try {
+                    const storedTasks = storageService.getTasks();
+                    if (storedTasks.length > 0) {
+                        setTasks(storedTasks);
+                    }
+                } catch (localError) {
+                    console.error('Error loading from localStorage:', localError);
+                }
+                setIsInitialized(true);
             }
-            setIsInitialized(true);
-        } catch (error) {
-            console.error('Error loading tasks from storage:', error);
-            setStorageError('No se pudieron cargar las tareas guardadas. Comenzando de nuevo.');
-            setIsInitialized(true);
         }
+
+        initializeTasks();
     }, []);
 
-    // Auto-save tasks to localStorage whenever they change
+    // Auto-save to localStorage as backup when server is unavailable
     useEffect(() => {
-        // Don't save until we've loaded initial data
         if (!isInitialized) return;
-
-        try {
-            storageService.saveTasks(tasks);
-            setStorageError(null);
-        } catch (error: any) {
-            console.error('Error saving tasks to storage:', error);
-            if (error.message && error.message.includes('QUOTA_EXCEEDED')) {
-                setStorageError(error.message);
-            } else {
-                setStorageError('Error al guardar las tareas.');
+        if (serverError) {
+            // Only use localStorage as fallback when server is unavailable
+            try {
+                storageService.saveTasks(tasks);
+                setStorageError(null);
+            } catch (error: any) {
+                console.error('Error saving tasks to storage:', error);
+                if (error.message && error.message.includes('QUOTA_EXCEEDED')) {
+                    setStorageError(error.message);
+                } else {
+                    setStorageError('Error al guardar las tareas.');
+                }
             }
         }
-    }, [tasks, isInitialized]);
+    }, [tasks, isInitialized, serverError]);
 
     const stopRecording = useCallback(async () => {
         if (!isRecording) return;
@@ -136,8 +194,25 @@ const App: React.FC = () => {
             setError(null);
             try {
                 const organizedTasks = await organizeTextIntoTasks(transcription);
-                // Append new tasks to existing ones instead of replacing
-                setTasks(prevTasks => [...prevTasks, ...organizedTasks]);
+
+                // Save to database if server is available
+                if (!serverError) {
+                    const createdTasks: Task[] = [];
+                    for (const task of organizedTasks) {
+                        try {
+                            const createdTask = await apiService.createTask(task);
+                            createdTasks.push(createdTask);
+                        } catch (apiError) {
+                            console.error('Error saving task to database:', apiError);
+                            // Add to local state anyway
+                            createdTasks.push(task);
+                        }
+                    }
+                    setTasks(prevTasks => [...prevTasks, ...createdTasks]);
+                } else {
+                    // Fallback to local state only
+                    setTasks(prevTasks => [...prevTasks, ...organizedTasks]);
+                }
             } catch (e: any) {
                 setError(e.message || "An unknown error occurred.");
             } finally {
@@ -145,7 +220,7 @@ const App: React.FC = () => {
             }
         }
         setTranscription('');
-    }, [isRecording, transcription]);
+    }, [isRecording, transcription, serverError]);
 
     const startRecording = async () => {
         if (isRecording) return;
@@ -203,36 +278,66 @@ const App: React.FC = () => {
         }
     };
 
-    const handleToggleTask = (taskId: string) => {
+    const handleToggleTask = async (taskId: string) => {
+        const task = tasks.find(t => t.id === taskId);
+        if (!task) return;
+
+        const updatedTask = {
+            ...task,
+            completed: !task.completed,
+            subtasks: task.subtasks.map(sub => ({ ...sub, completed: !task.completed }))
+        };
+
+        // Optimistic update
         setTasks(prevTasks =>
-            prevTasks.map(task =>
-                task.id === taskId
-                    ? {
-                        ...task,
-                        completed: !task.completed,
-                        subtasks: task.subtasks.map(sub => ({ ...sub, completed: !task.completed }))
-                      }
-                    : task
-            )
+            prevTasks.map(t => t.id === taskId ? updatedTask : t)
         );
+
+        // Save to database
+        if (!serverError) {
+            try {
+                await apiService.updateTask(taskId, updatedTask);
+            } catch (error) {
+                console.error('Error updating task:', error);
+                // Revert on error
+                setTasks(prevTasks =>
+                    prevTasks.map(t => t.id === taskId ? task : t)
+                );
+            }
+        }
     };
 
-    const handleToggleSubtask = (taskId: string, subtaskId: string) => {
-        setTasks(prevTasks =>
-            prevTasks.map(task =>
-                task.id === taskId
-                    ? {
-                        ...task,
-                        subtasks: task.subtasks.map(sub =>
-                            sub.id === subtaskId ? { ...sub, completed: !sub.completed } : sub
-                        )
-                      }
-                    : task
+    const handleToggleSubtask = async (taskId: string, subtaskId: string) => {
+        const task = tasks.find(t => t.id === taskId);
+        if (!task) return;
+
+        const updatedTask = {
+            ...task,
+            subtasks: task.subtasks.map(sub =>
+                sub.id === subtaskId ? { ...sub, completed: !sub.completed } : sub
             )
+        };
+
+        // Optimistic update
+        setTasks(prevTasks =>
+            prevTasks.map(t => t.id === taskId ? updatedTask : t)
         );
+
+        // Save to database
+        if (!serverError) {
+            try {
+                await apiService.updateTask(taskId, updatedTask);
+            } catch (error) {
+                console.error('Error updating subtask:', error);
+                // Revert on error
+                setTasks(prevTasks =>
+                    prevTasks.map(t => t.id === taskId ? task : t)
+                );
+            }
+        }
     };
 
-    const handleCreateTask = (taskData: Omit<Task, 'id' | 'createdAt'>) => {
+    const handleCreateTask = async (taskData: Omit<Task, 'id' | 'createdAt'>) => {
         // Generate unique ID
         const newTask: Task = {
             ...taskData,
@@ -240,29 +345,68 @@ const App: React.FC = () => {
             createdAt: new Date().toISOString()
         };
 
+        // Optimistic update
         setTasks(prevTasks => [...prevTasks, newTask]);
         setShowCreateForm(false);
+
+        // Save to database
+        if (!serverError) {
+            try {
+                await apiService.createTask(newTask);
+            } catch (error) {
+                console.error('Error creating task:', error);
+                setError('Error al crear la tarea en el servidor');
+            }
+        }
     };
 
     const handleEditTask = (task: Task) => {
         setEditingTask(task);
     };
 
-    const handleSaveEditTask = (taskData: Omit<Task, 'id' | 'createdAt'>) => {
+    const handleSaveEditTask = async (taskData: Omit<Task, 'id' | 'createdAt'>) => {
         if (!editingTask) return;
 
+        const updatedTask = { ...editingTask, ...taskData };
+
+        // Optimistic update
         setTasks(prevTasks =>
             prevTasks.map(task =>
-                task.id === editingTask.id
-                    ? { ...task, ...taskData }
-                    : task
+                task.id === editingTask.id ? updatedTask : task
             )
         );
         setEditingTask(null);
+
+        // Save to database
+        if (!serverError) {
+            try {
+                await apiService.updateTask(editingTask.id, updatedTask);
+            } catch (error) {
+                console.error('Error updating task:', error);
+                setError('Error al actualizar la tarea en el servidor');
+            }
+        }
     };
 
-    const handleDeleteTask = (taskId: string) => {
+    const handleDeleteTask = async (taskId: string) => {
+        const task = tasks.find(t => t.id === taskId);
+
+        // Optimistic update
         setTasks(prevTasks => prevTasks.filter(task => task.id !== taskId));
+
+        // Delete from database
+        if (!serverError) {
+            try {
+                await apiService.deleteTask(taskId);
+            } catch (error) {
+                console.error('Error deleting task:', error);
+                setError('Error al eliminar la tarea del servidor');
+                // Revert on error
+                if (task) {
+                    setTasks(prevTasks => [...prevTasks, task]);
+                }
+            }
+        }
     };
     
     useEffect(() => {
@@ -399,6 +543,18 @@ const App: React.FC = () => {
                             <StorageIndicator showDetails={true} />
                         </div>
 
+                        {isMigrating && (
+                            <div className="bg-blue-100 border-l-4 border-blue-500 text-blue-700 p-4 rounded-md mb-4" role="alert">
+                                <p className="font-bold">Migrando datos...</p>
+                                <p>Transfiriendo tus tareas a la base de datos permanente.</p>
+                            </div>
+                        )}
+                        {serverError && (
+                            <div className="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700 p-4 rounded-md mb-4" role="alert">
+                                <p className="font-bold">⚠️ Modo Sin Conexión</p>
+                                <p>{serverError} Los cambios se guardan localmente.</p>
+                            </div>
+                        )}
                         {storageError && <StorageError message={storageError} onClear={() => setTasks([])} />}
                         {isLoading && <LoadingSpinner message="Organizando tus pensamientos..." />}
                         {error && <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded-md" role="alert"><p className="font-bold">Error</p><p>{error}</p></div>}
