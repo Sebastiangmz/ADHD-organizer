@@ -62,11 +62,12 @@ fi
 # Verificar si el frontend ya está corriendo
 if lsof -Pi :3000 -sTCP:LISTEN -t >/dev/null 2>&1; then
     echo -e "${YELLOW}⚠️  El frontend ya está corriendo en el puerto 3000${NC}"
-    echo -e "${GREEN}✅ Abriendo en el navegador...${NC}"
-    xdg-open "http://localhost:3000" 2>/dev/null || \
-    firefox "http://localhost:3000" 2>/dev/null || \
-    chromium "http://localhost:3000" 2>/dev/null || \
-    google-chrome "http://localhost:3000" 2>/dev/null
+    echo -e "${GREEN}✅ Abriendo como aplicación...${NC}"
+    # Intentar abrir en modo app (sin barras del navegador)
+    firefox --new-window --class="FocusFlow" "http://localhost:3000" 2>/dev/null || \
+    chromium --app="http://localhost:3000" --class="FocusFlow" 2>/dev/null || \
+    google-chrome --app="http://localhost:3000" --class="FocusFlow" 2>/dev/null || \
+    xdg-open "http://localhost:3000" 2>/dev/null
 else
     echo -e "${GREEN}🎨 Iniciando frontend...${NC}"
     npm run dev > /tmp/focusflow-frontend.log 2>&1 &
@@ -85,14 +86,14 @@ else
     fi
 
     echo -e "${GREEN}✅ Frontend iniciado correctamente${NC}"
-    echo -e "${GREEN}✅ Abriendo en el navegador...${NC}"
+    echo -e "${GREEN}✅ Abriendo como aplicación...${NC}"
 
-    # Abrir en el navegador
+    # Abrir en modo app (ventana independiente sin barras del navegador)
     sleep 2
-    xdg-open "http://localhost:3000" 2>/dev/null || \
-    firefox "http://localhost:3000" 2>/dev/null || \
-    chromium "http://localhost:3000" 2>/dev/null || \
-    google-chrome "http://localhost:3000" 2>/dev/null
+    firefox --new-window --class="FocusFlow" "http://localhost:3000" 2>/dev/null || \
+    chromium --app="http://localhost:3000" --class="FocusFlow" 2>/dev/null || \
+    google-chrome --app="http://localhost:3000" --class="FocusFlow" 2>/dev/null || \
+    xdg-open "http://localhost:3000" 2>/dev/null
 fi
 
 echo -e "${GREEN}✨ FocusFlow AI está listo!${NC}"
